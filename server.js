@@ -9,6 +9,7 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const { JSONFilePreset } = require("lowdb/node");
 const { nanoid } = require("nanoid");
+const { PrismaClient } = require("@prisma/client");
 
 const {
   S3Client,
@@ -21,8 +22,14 @@ dotenv.config();
 
 const app = express();
 
+const prisma = process.env.DATABASE_URL ? new PrismaClient() : null;
+
 const PORT = Number(process.env.PORT || 8000);
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
+const CORS_ORIGIN_RAW = process.env.CORS_ORIGIN || "http://localhost:5173";
+const CORS_ORIGINS = CORS_ORIGIN_RAW
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -42,10 +49,25 @@ if (!APP_USERNAME || (!APP_PASSWORD && !APP_PASSWORD_HASH)) {
 // --- Middleware
 app.use(
   cors({
-    origin: CORS_ORIGIN,
+    origin: function (origin, callback) {
+      // Allow non-browser requests (like curl) where `origin` can be undefined.
+      if (!origin) return callback(null, true);
+
+      // If you set CORS_ORIGIN="*" then allow everything (useful for testing).
+      if (CORS_ORIGINS.includes("*")) return callback(null, true);
+
+      if (CORS_ORIGINS.includes(origin)) return callback(null, true);
+
+      // Block unknown origins without throwing.
+      return callback(null, false);
+    },
     credentials: false,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Authorization", "Content-Type", "Accept", "X-Requested-With"],
   }),
 );
+
+
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -123,9 +145,20 @@ function normalizeTaskStatus(status) {
 }
 
 app.get("/api/tasks", authRequired, async (req, res) => {
-  const db = await getTasksDb();
-  const tasks = Array.isArray(db.data.tasks) ? db.data.tasks : [];
-  return res.json({ ok: true, tasks });
+  try {
+    if (prisma) {
+      const tasks = await prisma.task.findMany({
+        orderBy: { createdAt: "desc" },
+      });
+      return res.json({ ok: true, tasks });
+    }
+
+    const db = await getTasksDb();
+    const tasks = Array.isArray(db.data.tasks) ? db.data.tasks : [];
+    return res.json({ ok: true, tasks });
+  } catch (e) {
+    return res.status(500).json({ ok: false, message: "Failed to load tasks", error: e?.message });
+  }
 });
 
 app.post("/api/tasks", authRequired, async (req, res) => {
@@ -134,7 +167,6 @@ app.post("/api/tasks", authRequired, async (req, res) => {
     return res.status(400).json({ ok: false, message: "title is required" });
   }
 
-  const db = await getTasksDb();
   const task = {
     id: nanoid(10),
     title: String(title).trim(),
@@ -144,46 +176,88 @@ app.post("/api/tasks", authRequired, async (req, res) => {
     updatedAt: new Date().toISOString(),
   };
 
-  db.data.tasks.push(task);
-  await db.write();
-  return res.json({ ok: true, task });
+  try {
+    if (prisma) {
+      const created = await prisma.task.create({
+        data: {
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          status: task.status,
+        },
+      });
+      return res.json({ ok: true, task: created });
+    }
+
+    const db = await getTasksDb();
+    db.data.tasks.push(task);
+    await db.write();
+    return res.json({ ok: true, task });
+  } catch (e) {
+    return res.status(500).json({ ok: false, message: "Failed to create task", error: e?.message });
+  }
 });
 
 app.patch("/api/tasks/:id", authRequired, async (req, res) => {
   const { id } = req.params;
   const { title, description, status } = req.body || {};
 
-  const db = await getTasksDb();
-  const tasks = Array.isArray(db.data.tasks) ? db.data.tasks : [];
-  const idx = tasks.findIndex((t) => t.id === id);
-  if (idx === -1) return res.status(404).json({ ok: false, message: "not found" });
+  try {
+    if (prisma) {
+      const updated = await prisma.task.update({
+        where: { id },
+        data: {
+          ...(title !== undefined ? { title: String(title).trim() } : {}),
+          ...(description !== undefined ? { description: String(description).trim() } : {}),
+          ...(status !== undefined ? { status: normalizeTaskStatus(status) } : {}),
+        },
+      });
+      return res.json({ ok: true, task: updated });
+    }
 
-  const prev = tasks[idx];
-  const next = {
-    ...prev,
-    title: title !== undefined ? String(title).trim() : prev.title,
-    description:
-      description !== undefined ? String(description).trim() : prev.description,
-    status: status !== undefined ? normalizeTaskStatus(status) : prev.status,
-    updatedAt: new Date().toISOString(),
-  };
-  tasks[idx] = next;
-  db.data.tasks = tasks;
-  await db.write();
-  return res.json({ ok: true, task: next });
+    const db = await getTasksDb();
+    const tasks = Array.isArray(db.data.tasks) ? db.data.tasks : [];
+    const idx = tasks.findIndex((t) => t.id === id);
+    if (idx === -1) return res.status(404).json({ ok: false, message: "not found" });
+
+    const prev = tasks[idx];
+    const next = {
+      ...prev,
+      title: title !== undefined ? String(title).trim() : prev.title,
+      description:
+        description !== undefined ? String(description).trim() : prev.description,
+      status: status !== undefined ? normalizeTaskStatus(status) : prev.status,
+      updatedAt: new Date().toISOString(),
+    };
+    tasks[idx] = next;
+    db.data.tasks = tasks;
+    await db.write();
+    return res.json({ ok: true, task: next });
+  } catch (e) {
+    return res.status(500).json({ ok: false, message: "Failed to update task", error: e?.message });
+  }
 });
 
 app.delete("/api/tasks/:id", authRequired, async (req, res) => {
   const { id } = req.params;
-  const db = await getTasksDb();
-  const tasks = Array.isArray(db.data.tasks) ? db.data.tasks : [];
-  const next = tasks.filter((t) => t.id !== id);
-  if (next.length === tasks.length) {
-    return res.status(404).json({ ok: false, message: "not found" });
+  try {
+    if (prisma) {
+      await prisma.task.delete({ where: { id } });
+      return res.json({ ok: true });
+    }
+
+    const db = await getTasksDb();
+    const tasks = Array.isArray(db.data.tasks) ? db.data.tasks : [];
+    const next = tasks.filter((t) => t.id !== id);
+    if (next.length === tasks.length) {
+      return res.status(404).json({ ok: false, message: "not found" });
+    }
+    db.data.tasks = next;
+    await db.write();
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ ok: false, message: "Failed to delete task", error: e?.message });
   }
-  db.data.tasks = next;
-  await db.write();
-  return res.json({ ok: true });
 });
 
 // --- R2/S3 client
