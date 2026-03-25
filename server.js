@@ -34,7 +34,9 @@ const app = express();
 
 const prisma = process.env.DATABASE_URL ? new PrismaClient() : null;
 
-const PORT = Number(process.env.PORT || 8000);
+// Coolify / PaaS commonly injects `PORT`.
+// Default to 3000 so local + hosted don't diverge.
+const PORT = Number(process.env.PORT || 3000);
 const CORS_ORIGIN_RAW = process.env.CORS_ORIGIN || "http://localhost:5173";
 const CORS_ORIGINS = CORS_ORIGIN_RAW
   .split(",")
@@ -501,14 +503,14 @@ app.get("/api/download", authRequired, async (req, res) => {
 
 
 
-    
+
     return body.pipe(res);
   } catch (e) {
     return res.status(404).json({ ok: false, message: "Not found", error: e?.message });
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   // eslint-disable-next-line no-console
   console.log(`API running on http://localhost:${PORT}`);
 });
