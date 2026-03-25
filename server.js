@@ -488,6 +488,9 @@ app.get("/api/download", authRequired, async (req, res) => {
       }
     });
 
+
+
+    
     return body.pipe(res);
   } catch (e) {
     return res.status(404).json({ ok: false, message: "Not found", error: e?.message });
