@@ -7,9 +7,19 @@ const os = require("os");
 const dotenv = require("dotenv");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
-const { JSONFilePreset } = require("lowdb/node");
 const { nanoid } = require("nanoid");
 const { PrismaClient } = require("@prisma/client");
+
+// lowdb is ESM-only on newer versions.
+// Since this file is CommonJS, we load it dynamically at runtime.
+let JSONFilePreset;
+async function getJSONFilePreset() {
+  if (!JSONFilePreset) {
+    const mod = await import("lowdb/node");
+    JSONFilePreset = mod.JSONFilePreset;
+  }
+  return JSONFilePreset;
+}
 
 const {
   S3Client,
@@ -132,9 +142,10 @@ const TASKS_DB_PATH =
   path.join(__dirname, ".data", "tasks.json");
 
 async function getTasksDb() {
+  const preset = await getJSONFilePreset();
   const dir = path.dirname(TASKS_DB_PATH);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const db = await JSONFilePreset(TASKS_DB_PATH, { tasks: [] });
+  const db = await preset(TASKS_DB_PATH, { tasks: [] });
   return db;
 }
 
