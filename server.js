@@ -7,8 +7,18 @@ const os = require("os");
 const dotenv = require("dotenv");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
-const { nanoid } = require("nanoid");
+
 const { PrismaClient } = require("@prisma/client");
+
+// nanoid is ESM-only on newer versions; load dynamically in CommonJS.
+let nanoidFn;
+async function getNanoid() {
+  if (!nanoidFn) {
+    const mod = await import("nanoid");
+    nanoidFn = mod.nanoid;
+  }
+  return nanoidFn;
+}
 
 // lowdb is ESM-only on newer versions.
 // Since this file is CommonJS, we load it dynamically at runtime.
@@ -25,6 +35,7 @@ const {
   S3Client,
   PutObjectCommand,
   ListObjectsV2Command,
+  
   GetObjectCommand,
 } = require("@aws-sdk/client-s3");
 
@@ -160,10 +171,17 @@ function normalizeTaskStatus(status) {
 app.get("/api/tasks", authRequired, async (req, res) => {
   try {
     if (prisma) {
-      const tasks = await prisma.task.findMany({
-        orderBy: { createdAt: "desc" },
-      });
-      return res.json({ ok: true, tasks });
+      try {
+        const tasks = await prisma.task.findMany({
+          orderBy: { createdAt: "desc" },
+        });
+        return res.json({ ok: true, tasks });
+      } catch (e) {
+        // If DB schema isn't migrated yet, fall back to lowdb instead of hard failing.
+        // (Prisma: e.g. "The table public.Task does not exist".)
+        // eslint-disable-next-line no-console
+        console.warn("Prisma tasks failed, falling back to lowdb:", e?.message ?? e);
+      }
     }
 
     const db = await getTasksDb();
@@ -180,8 +198,9 @@ app.post("/api/tasks", authRequired, async (req, res) => {
     return res.status(400).json({ ok: false, message: "title is required" });
   }
 
+  const id = (await getNanoid())(10);
   const task = {
-    id: nanoid(10),
+    id,
     title: String(title).trim(),
     description: description ? String(description).trim() : "",
     status: normalizeTaskStatus(status),
@@ -191,15 +210,20 @@ app.post("/api/tasks", authRequired, async (req, res) => {
 
   try {
     if (prisma) {
-      const created = await prisma.task.create({
-        data: {
-          id: task.id,
-          title: task.title,
-          description: task.description,
-          status: task.status,
-        },
-      });
-      return res.json({ ok: true, task: created });
+      try {
+        const created = await prisma.task.create({
+          data: {
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            status: task.status,
+          },
+        });
+        return res.json({ ok: true, task: created });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Prisma task create failed, falling back to lowdb:", e?.message ?? e);
+      }
     }
 
     const db = await getTasksDb();
@@ -217,15 +241,20 @@ app.patch("/api/tasks/:id", authRequired, async (req, res) => {
 
   try {
     if (prisma) {
-      const updated = await prisma.task.update({
-        where: { id },
-        data: {
-          ...(title !== undefined ? { title: String(title).trim() } : {}),
-          ...(description !== undefined ? { description: String(description).trim() } : {}),
-          ...(status !== undefined ? { status: normalizeTaskStatus(status) } : {}),
-        },
-      });
-      return res.json({ ok: true, task: updated });
+      try {
+        const updated = await prisma.task.update({
+          where: { id },
+          data: {
+            ...(title !== undefined ? { title: String(title).trim() } : {}),
+            ...(description !== undefined ? { description: String(description).trim() } : {}),
+            ...(status !== undefined ? { status: normalizeTaskStatus(status) } : {}),
+          },
+        });
+        return res.json({ ok: true, task: updated });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Prisma task update failed, falling back to lowdb:", e?.message ?? e);
+      }
     }
 
     const db = await getTasksDb();
@@ -255,8 +284,13 @@ app.delete("/api/tasks/:id", authRequired, async (req, res) => {
   const { id } = req.params;
   try {
     if (prisma) {
-      await prisma.task.delete({ where: { id } });
-      return res.json({ ok: true });
+      try {
+        await prisma.task.delete({ where: { id } });
+        return res.json({ ok: true });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Prisma task delete failed, falling back to lowdb:", e?.message ?? e);
+      }
     }
 
     const db = await getTasksDb();
